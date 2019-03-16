@@ -39,6 +39,9 @@ class TestCorosyncConf(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
         os.remove(self.tmpfile.name)
 
+    @mock.patch.object(hooks, 'configure_resources_on_remotes')
+    @mock.patch.object(hooks, 'configure_pacemaker_remotes')
+    @mock.patch.object(hooks, 'set_cluster_symmetry')
     @mock.patch.object(hooks, 'write_maas_dns_address')
     @mock.patch('pcmk.wait_for_pcmk')
     @mock.patch('pcmk.crm_opt_exists')
@@ -61,7 +64,10 @@ class TestCorosyncConf(unittest.TestCase):
                                  configure_stonith, configure_monitor_host,
                                  configure_cluster_global, configure_corosync,
                                  is_leader, crm_opt_exists,
-                                 wait_for_pcmk, write_maas_dns_address):
+                                 wait_for_pcmk, write_maas_dns_address,
+                                 set_cluster_symmetry,
+                                 configure_pacemaker_remotes,
+                                 configure_resources_on_remotes):
 
         def fake_crm_opt_exists(res_name):
             # res_ubuntu will take the "update resource" route
@@ -108,6 +114,8 @@ class TestCorosyncConf(unittest.TestCase):
         configure_monitor_host.assert_called_with()
         configure_cluster_global.assert_called_with()
         configure_corosync.assert_called_with()
+        set_cluster_symmetry.assert_called_with()
+        configure_pacemaker_remotes.assert_called_with()
         write_maas_dns_address.assert_not_called()
 
         for kw, key in [('location', 'locations'),
@@ -131,6 +139,9 @@ class TestCorosyncConf(unittest.TestCase):
                     commit.assert_any_call(
                         'crm -w -F configure %s %s %s' % (kw, name, params))
 
+    @mock.patch.object(hooks, 'configure_resources_on_remotes')
+    @mock.patch.object(hooks, 'configure_pacemaker_remotes')
+    @mock.patch.object(hooks, 'set_cluster_symmetry')
     @mock.patch.object(hooks, 'write_maas_dns_address')
     @mock.patch.object(hooks, 'setup_maas_api')
     @mock.patch.object(hooks, 'validate_dns_ha')
@@ -158,7 +169,10 @@ class TestCorosyncConf(unittest.TestCase):
                                         configure_corosync, is_leader,
                                         crm_opt_exists,
                                         wait_for_pcmk, validate_dns_ha,
-                                        setup_maas_api, write_maas_dns_addr):
+                                        setup_maas_api, write_maas_dns_addr,
+                                        set_cluster_symmetry,
+                                        configure_pacemaker_remotes,
+                                        configure_resources_on_remotes):
         validate_dns_ha.return_value = True
         crm_opt_exists.return_value = False
         is_leader.return_value = True
@@ -363,3 +377,13 @@ class TestHooks(test_utils.CharmTestCase):
             relation_id='hanode:1',
             relation_settings={'private-address': '10.10.10.2'}
         )
+
+    @mock.patch.object(hooks, 'relation_ids')
+    @mock.patch.object(hooks, 'relation_set')
+    def test_send_auth_key(self, relation_set, relation_ids):
+        relation_ids.return_value = ['relid1']
+        self.test_config.set('corosync_key', 'corokey')
+        hooks.send_auth_key()
+        relation_set.assert_called_once_with(
+            relation_id='relid1',
+            **{'pacemaker-key': 'corokey'})

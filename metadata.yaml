@@ -15,6 +15,8 @@ requires:
   juju-info:
     interface: juju-info
     scope: container
+  pacemaker-remote:
+    interface: pacemaker-remote
 provides:
   ha:
     interface: hacluster

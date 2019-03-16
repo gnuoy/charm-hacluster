@@ -99,6 +99,8 @@ TEMPLATES_DIR = 'templates'
 COROSYNC_CONF = '/etc/corosync/corosync.conf'
 COROSYNC_DEFAULT = '/etc/default/corosync'
 COROSYNC_AUTHKEY = '/etc/corosync/authkey'
+PACEMAKER_AUTHKEY = '/etc/pacemaker/authkey'
+
 COROSYNC_HACLUSTER_ACL_DIR = '/etc/corosync/uidgid.d'
 COROSYNC_HACLUSTER_ACL = COROSYNC_HACLUSTER_ACL_DIR + '/hacluster'
 COROSYNC_CONF_FILES = [
@@ -362,6 +364,11 @@ def emit_base_conf():
         write_file(path=COROSYNC_AUTHKEY,
                    content=b64decode(corosync_key),
                    perms=0o400)
+        write_file(path=PACEMAKER_AUTHKEY,
+                   owner='root',
+                   group='haclient',
+                   content=b64decode(corosync_key),
+                   perms=0o440)
         return True
 
     return False
@@ -573,6 +580,202 @@ def configure_cluster_global():
     pcmk.commit(cmd)
 
 
+def get_resources_on_remotes():
+    """Whether to run resources on remote nodes.
+
+    Check the 'enable-resources' setting accross the remote units. If it is
+    absent or inconsistent then raise a ValueError.
+
+    :returns: Whether to run resources on remote nodes
+    :rtype: bool
+    :raises: ValueError
+    """
+    responses = []
+    for relid in relation_ids('pacemaker-remote'):
+        for unit in related_units(relid):
+            data = parse_data(relid, unit, 'enable-resources')
+            # parse_data returns {} if key is absent.
+            if type(data) is bool:
+                responses.append(data)
+
+    if len(set(responses)) == 1:
+        run_resources_on_remotes = responses[0]
+    else:
+        msg = "Inconsistent or absent enable-resources setting {}".format(
+            responses)
+        log(msg, level=WARNING)
+        raise ValueError(msg)
+    return run_resources_on_remotes
+
+
+def set_cluster_symmetry():
+    """Set the cluster symmetry.
+
+    By default the cluster is an Opt-out cluster (equivalent to
+    symmetric-cluster=true) this means that any resource can run anywhere
+    unless a node explicitly Opts-out. When using pacemaker-remotes there may
+    be hundreds of nodes and if they are not prepared to run resources the
+    csluster should be switched to an Opt-in cluster.
+    """
+    try:
+        symmetric = get_resources_on_remotes()
+    except ValueError:
+        msg = 'Unable to calculated desired symmetric-cluster setting'
+        log(msg, level=WARNING)
+        return
+    log('Configuring symmetric-cluster: {}'.format(symmetric), level=DEBUG)
+    cmd = "crm configure property symmetric-cluster={}".format(
+        str(symmetric).lower())
+    pcmk.commit(cmd)
+
+
+def add_location_rules_for_local_nodes(res_name):
+    """Add location rules for running resource on local nodes.
+
+    Add location rules allowing the given resource to run on local nodes (eg
+    not remote nodes).
+
+    :param res_name: Resource name to create location rules for.
+    :type res_name: str
+    """
+    for node in pcmk.list_nodes():
+        loc_constraint_name = 'loc-{}-{}'.format(res_name, node)
+        if not pcmk.crm_opt_exists(loc_constraint_name):
+            cmd = 'crm -w -F configure location {} {} 0: {}'.format(
+                loc_constraint_name,
+                res_name,
+                node)
+            pcmk.commit(cmd)
+            log('%s' % cmd, level=DEBUG)
+
+
+def configure_pacemaker_remote(remote_hostname):
+    """Create a resource corresponding to the pacemaker remote node.
+
+    :param remote_hostname: Remote hostname used for registering remote node.
+    :type remote_hostname: str
+    :returns: Name of resource for pacemaker remote node.
+    :rtype: str
+    """
+    resource_name = remote_hostname.split('.')[0]
+    if not pcmk.is_resource_present(resource_name):
+        cmd = (
+            "crm configure primitive {} ocf:pacemaker:remote "
+            "params server={} reconnect_interval=60 "
+            "op monitor interval=30s").format(resource_name,
+                                              remote_hostname)
+        pcmk.commit(cmd)
+    return resource_name
+
+
+def cleanup_remote_nodes(remote_nodes):
+    """Cleanup pacemaker remote resources
+
+    Remove all status records of the resource and
+    probe the node afterwards.
+    :param remote_nodes: List of resource names associated with remote nodes
+    :type remote_nodes: list
+    """
+    for res_name in remote_nodes:
+        cmd = 'crm resource cleanup {}'.format(res_name)
+        pcmk.commit(cmd)
+
+
+def configure_pacemaker_remotes():
+    """Create resources corresponding to the pacemaker remote nodes.
+
+    Create resources, location constraints and stonith resources for pacemaker
+    remote node.
+    """
+    log('Checking for pacemaker-remote nodes', level=DEBUG)
+    remote_nodes = []
+    for relid in relation_ids('pacemaker-remote'):
+        for unit in related_units(relid):
+            remote_hostname = parse_data(relid, unit, 'remote-hostname')
+            if remote_hostname:
+                resource_name = configure_pacemaker_remote(remote_hostname)
+                remote_nodes.append(resource_name)
+                add_location_rules_for_local_nodes(resource_name)
+            stonith_hostname = parse_data(relid, unit, 'stonith-hostname')
+            if stonith_hostname:
+                configure_pacemaker_remote_stonith(stonith_hostname)
+    cleanup_remote_nodes(remote_nodes)
+
+
+def configure_pacemaker_remote_stonith(stonith_hostname):
+    """Create resources corresponding to the pacemaker remote nodes.
+
+    Create resources, location constraints and stonith resources for pacemaker
+    remote node.
+
+    :param stonith_hostname: The hostname that the stonith management system
+                             refers to the remote node as.
+    :type stonith_hostname: str
+    """
+    log('Checking for pacemaker-remote stonith nodes', level=DEBUG)
+    stonith_res_name = 'st-{}'.format(stonith_hostname.split('.')[0])
+    if not pcmk.is_resource_present(stonith_res_name):
+        ctxt = {
+            'url': config('maas_url'),
+            'apikey': config('maas_credentials'),
+            'hostnames': stonith_hostname,
+            'stonith_resource_name': stonith_res_name}
+        if all(ctxt.values()):
+            cmd = (
+                "crm configure primitive {stonith_resource_name} "
+                "stonith:external/maas "
+                "params url='{url}' apikey='{apikey}' hostnames={hostnames} "
+                "op monitor interval=25 start-delay=25 "
+                "timeout=25").format(**ctxt)
+            pcmk.commit(cmd)
+        else:
+            raise Exception("Missing info")
+        pcmk.commit("crm configure property stonith-enabled=true")
+
+
+def configure_resources_on_remotes(resources=None, clones=None, groups=None):
+    """Add location rules as needed for resources, clones and groups
+
+    If remote nodes should not run resources then add location rules then add
+    location rules to enable them on local nodes.
+
+    :param resources: Resource definitions
+    :type resources: dict
+    :param clones: Clone definitions
+    :type clones: dict
+    :param groups: Group definitions
+    :type groups: dict
+    """
+    clones = clones or {}
+    groups = groups or {}
+    try:
+        resources_on_remote = get_resources_on_remotes()
+    except ValueError:
+        msg = 'Unable to calculate whether resources should run on remotes'
+        log(msg, level=WARNING)
+        return
+    if resources_on_remote:
+        msg = ('Resources are permitted to run on remotes, no need to create '
+               'location constraints')
+        log(msg, level=WARNING)
+        return
+    for res_name, res_type in resources.iteritems():
+        if res_name not in clones.values() + groups.values():
+            add_location_rules_for_local_nodes(res_name)
+    for cl_name in clones:
+        add_location_rules_for_local_nodes(cl_name)
+        # Limit clone resources to only running on X number of nodes where X
+        # is the number of local nodes. Otherwise they will show as offline
+        # on the remote nodes.
+        node_count = len(pcmk.list_nodes())
+        cmd = ('crm_resource --resource {} --set-parameter clone-max '
+               '--meta --parameter-value {}').format(cl_name, node_count)
+        pcmk.commit(cmd)
+        log('%s' % cmd, level=DEBUG)
+    for grp_name in groups:
+        add_location_rules_for_local_nodes(grp_name)
+
+
 def get_ip_addr_from_resource_params(params):
     """Returns the IP address in the resource params provided
 
@@ -731,6 +934,9 @@ def setup_ocf_files():
     rsync('ocf/maas/dns', '/usr/lib/ocf/resource.d/maas/dns')
     rsync('ocf/maas/maas_dns.py', '/usr/lib/heartbeat/maas_dns.py')
     rsync('ocf/maas/maasclient/', '/usr/lib/heartbeat/maasclient/')
+    rsync(
+        'ocf/maas/maas_stonith_plugin.py',
+        '/usr/lib/stonith/plugins/external/maas')
 
 
 def write_maas_dns_address(resource_name, resource_addr):

@@ -70,6 +70,7 @@ from utils import (
     configure_stonith,
     configure_monitor_host,
     configure_cluster_global,
+    configure_pacemaker_remotes,
     enable_lsb_services,
     disable_lsb_services,
     disable_upstart_services,
@@ -87,6 +88,8 @@ from utils import (
     MAASConfigIncomplete,
     pause_unit,
     resume_unit,
+    configure_resources_on_remotes,
+    set_cluster_symmetry,
 )
 
 from charmhelpers.contrib.charmsupport import nrpe
@@ -97,6 +100,7 @@ PACKAGES = ['corosync', 'pacemaker', 'python-netaddr', 'ipmitool']
 COROSYNC_CONF = '/etc/corosync/corosync.conf'
 COROSYNC_DEFAULT = '/etc/default/corosync'
 COROSYNC_AUTHKEY = '/etc/corosync/authkey'
+PACEMAKER_AUTHKEY = '/etc/corosync/authkey'
 
 COROSYNC_CONF_FILES = [
     COROSYNC_DEFAULT,
@@ -217,6 +221,7 @@ def hanode_relation_joined(relid=None):
 
 @hooks.hook('ha-relation-joined',
             'ha-relation-changed',
+            'pacemaker-remote-relation-changed',
             'juju-info-relation-joined',
             'juju-info-relation-changed',
             'hanode-relation-changed')
@@ -313,6 +318,9 @@ def ha_relation_changed():
     # Only configure the cluster resources
     # from the oldest peer unit.
     if is_leader():
+        log('Setting cluster symmetry')
+        set_cluster_symmetry()
+
         log('Deleting Resources' % (delete_resources), level=DEBUG)
         for res_name in delete_resources:
             if pcmk.crm_opt_exists(res_name):
@@ -419,6 +427,12 @@ def ha_relation_changed():
                 pcmk.commit(cmd)
                 log('%s' % cmd, level=DEBUG)
 
+        configure_pacemaker_remotes()
+        configure_resources_on_remotes(
+            resources=resources,
+            clones=clones,
+            groups=groups)
+
         for res_name, res_type in resources.iteritems():
             if len(init_services) != 0 and res_name in init_services:
                 # Checks that the resources are running and started.
@@ -523,6 +537,16 @@ def series_upgrade_complete():
     clear_unit_upgrading()
     config_changed()
     resume_unit()
+
+
+@hooks.hook('pacemaker-remote-relation-joined')
+def send_auth_key():
+    key = config('corosync_key')
+    if key:
+        for rel_id in relation_ids('pacemaker-remote'):
+            relation_set(
+                relation_id=rel_id,
+                **{'pacemaker-key': key})
 
 
 if __name__ == '__main__':

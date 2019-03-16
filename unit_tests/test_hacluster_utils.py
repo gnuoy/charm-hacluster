@@ -442,3 +442,341 @@ class UtilsTestCase(unittest.TestCase):
         relation_get.assert_has_calls([
             mock.call('json_testkey', 'neutron-api/0', 'hacluster:1'),
         ])
+
+    @mock.patch.object(utils, 'relation_get')
+    @mock.patch.object(utils, 'related_units')
+    @mock.patch.object(utils, 'relation_ids')
+    def test_get_resources_on_remotes_all_false(self, relation_ids,
+                                                related_units, relation_get):
+        rdata = {
+            'pacemaker-remote:49': {
+                'pacemaker-remote/0': {'enable-resources': "false"},
+                'pacemaker-remote/1': {'enable-resources': "false"},
+                'pacemaker-remote/2': {'enable-resources': "false"}}}
+
+        relation_ids.side_effect = lambda x: rdata.keys()
+        related_units.side_effect = lambda x: rdata[x].keys()
+        relation_get.side_effect = lambda x, y, z: rdata[z][y].get(x)
+        self.assertFalse(utils.get_resources_on_remotes())
+
+    @mock.patch.object(utils, 'relation_get')
+    @mock.patch.object(utils, 'related_units')
+    @mock.patch.object(utils, 'relation_ids')
+    def test_get_resources_on_remotes_all_true(self, relation_ids,
+                                               related_units,
+                                               relation_get):
+        rdata = {
+            'pacemaker-remote:49': {
+                'pacemaker-remote/0': {'enable-resources': "true"},
+                'pacemaker-remote/1': {'enable-resources': "true"},
+                'pacemaker-remote/2': {'enable-resources': "true"}}}
+
+        relation_ids.side_effect = lambda x: rdata.keys()
+        related_units.side_effect = lambda x: rdata[x].keys()
+        relation_get.side_effect = lambda x, y, z: rdata[z][y].get(x)
+        self.assertTrue(utils.get_resources_on_remotes())
+
+    @mock.patch.object(utils, 'relation_get')
+    @mock.patch.object(utils, 'related_units')
+    @mock.patch.object(utils, 'relation_ids')
+    def test_get_resources_on_remotes_mix(self, relation_ids, related_units,
+                                          relation_get):
+        rdata = {
+            'pacemaker-remote:49': {
+                'pacemaker-remote/0': {'enable-resources': "true"},
+                'pacemaker-remote/1': {'enable-resources': "false"},
+                'pacemaker-remote/2': {'enable-resources': "true"}}}
+
+        relation_ids.side_effect = lambda x: rdata.keys()
+        related_units.side_effect = lambda x: rdata[x].keys()
+        relation_get.side_effect = lambda x, y, z: rdata[z][y].get(x)
+        with self.assertRaises(ValueError):
+            self.assertTrue(utils.get_resources_on_remotes())
+
+    @mock.patch.object(utils, 'relation_get')
+    @mock.patch.object(utils, 'related_units')
+    @mock.patch.object(utils, 'relation_ids')
+    def test_get_resources_on_remotes_missing(self, relation_ids,
+                                              related_units,
+                                              relation_get):
+        rdata = {
+            'pacemaker-remote:49': {
+                'pacemaker-remote/0': {},
+                'pacemaker-remote/1': {},
+                'pacemaker-remote/2': {}}}
+
+        relation_ids.side_effect = lambda x: rdata.keys()
+        related_units.side_effect = lambda x: rdata[x].keys()
+        relation_get.side_effect = lambda x, y, z: rdata[z][y].get(x, None)
+        with self.assertRaises(ValueError):
+            self.assertTrue(utils.get_resources_on_remotes())
+
+    @mock.patch.object(utils, 'get_resources_on_remotes')
+    @mock.patch('pcmk.commit')
+    def test_set_cluster_symmetry_true(self, commit, get_resources_on_remotes):
+        get_resources_on_remotes.return_value = True
+        utils.set_cluster_symmetry()
+        commit.assert_called_once_with(
+            'crm configure property symmetric-cluster=true')
+
+    @mock.patch.object(utils, 'get_resources_on_remotes')
+    @mock.patch('pcmk.commit')
+    def test_set_cluster_symmetry_false(self, commit,
+                                        get_resources_on_remotes):
+        get_resources_on_remotes.return_value = False
+        utils.set_cluster_symmetry()
+        commit.assert_called_once_with(
+            'crm configure property symmetric-cluster=false')
+
+    @mock.patch.object(utils, 'get_resources_on_remotes')
+    @mock.patch('pcmk.commit')
+    def test_set_cluster_symmetry_unknown(self, commit,
+                                          get_resources_on_remotes):
+        get_resources_on_remotes.side_effect = ValueError()
+        utils.set_cluster_symmetry()
+        self.assertFalse(commit.called)
+
+    @mock.patch('pcmk.commit')
+    @mock.patch('pcmk.crm_opt_exists')
+    @mock.patch('pcmk.list_nodes')
+    def test_add_location_rules_for_local_nodes(self, list_nodes,
+                                                crm_opt_exists, commit):
+        existing_resources = ['loc-res1-node1']
+        list_nodes.return_value = ['node1', 'node2']
+        crm_opt_exists.side_effect = lambda x: x in existing_resources
+        utils.add_location_rules_for_local_nodes('res1')
+        commit.assert_called_once_with(
+            'crm -w -F configure location loc-res1-node2 res1 0: node2')
+
+    @mock.patch('pcmk.is_resource_present')
+    @mock.patch('pcmk.commit')
+    def test_configure_pacemaker_remote(self, commit, is_resource_present):
+        is_resource_present.return_value = False
+        self.assertEqual(
+            utils.configure_pacemaker_remote(
+                'juju-aa0ba5-zaza-ed2ce6f303f0-10'),
+            'juju-aa0ba5-zaza-ed2ce6f303f0-10')
+        commit.assert_called_once_with(
+            'crm configure primitive juju-aa0ba5-zaza-ed2ce6f303f0-10 '
+            'ocf:pacemaker:remote params '
+            'server=juju-aa0ba5-zaza-ed2ce6f303f0-10 '
+            'reconnect_interval=60 op monitor interval=30s')
+
+    @mock.patch('pcmk.is_resource_present')
+    @mock.patch('pcmk.commit')
+    def test_configure_pacemaker_remote_fqdn(self, commit,
+                                             is_resource_present):
+        is_resource_present.return_value = False
+        self.assertEqual(
+            utils.configure_pacemaker_remote(
+                'juju-aa0ba5-zaza-ed2ce6f303f0-10.maas'),
+            'juju-aa0ba5-zaza-ed2ce6f303f0-10')
+        commit.assert_called_once_with(
+            'crm configure primitive juju-aa0ba5-zaza-ed2ce6f303f0-10 '
+            'ocf:pacemaker:remote params '
+            'server=juju-aa0ba5-zaza-ed2ce6f303f0-10.maas '
+            'reconnect_interval=60 op monitor interval=30s')
+
+    @mock.patch('pcmk.is_resource_present')
+    @mock.patch('pcmk.commit')
+    def test_configure_pacemaker_remote_duplicate(self, commit,
+                                                  is_resource_present):
+        is_resource_present.return_value = True
+        self.assertEqual(
+            utils.configure_pacemaker_remote(
+                'juju-aa0ba5-zaza-ed2ce6f303f0-10.maas'),
+            'juju-aa0ba5-zaza-ed2ce6f303f0-10')
+        self.assertFalse(commit.called)
+
+    @mock.patch('pcmk.commit')
+    def test_cleanup_remote_nodes(self, commit):
+        utils.cleanup_remote_nodes(['res-node1', 'res-node2'])
+        commit_calls = [
+            mock.call('crm resource cleanup res-node1'),
+            mock.call('crm resource cleanup res-node2')]
+        commit.assert_has_calls(commit_calls)
+
+    @mock.patch.object(utils, 'relation_get')
+    @mock.patch.object(utils, 'related_units')
+    @mock.patch.object(utils, 'relation_ids')
+    @mock.patch.object(utils, 'add_location_rules_for_local_nodes')
+    @mock.patch.object(utils, 'configure_pacemaker_remote')
+    @mock.patch.object(utils, 'configure_pacemaker_remote_stonith')
+    @mock.patch.object(utils, 'cleanup_remote_nodes')
+    def test_configure_pacemaker_remotes(self,
+                                         cleanup_remote_nodes,
+                                         configure_pacemaker_remote_stonith,
+                                         configure_pacemaker_remote,
+                                         add_location_rules_for_local_nodes,
+                                         relation_ids, related_units,
+                                         relation_get):
+        rdata = {
+            'pacemaker-remote:49': {
+                'pacemaker-remote/0': {
+                    'remote-hostname': '"node1"',
+                    'stonith-hostname': '"st-node1"'},
+                'pacemaker-remote/1': {
+                    'remote-hostname': '"node2"'},
+                'pacemaker-remote/2': {
+                    'stonith-hostname': '"st-node3"'}}}
+        relation_ids.side_effect = lambda x: rdata.keys()
+        related_units.side_effect = lambda x: rdata[x].keys()
+        relation_get.side_effect = lambda x, y, z: rdata[z][y].get(x, None)
+        configure_pacemaker_remote.side_effect = lambda x: 'res-{}'.format(x)
+        utils.configure_pacemaker_remotes()
+        remote_calls = [
+            mock.call('node1'),
+            mock.call('node2')]
+        add_loc_calls = [
+            mock.call('res-node1'),
+            mock.call('res-node2')]
+        stonith_calls = [
+            mock.call('st-node1'),
+            mock.call('st-node3')]
+        configure_pacemaker_remote.assert_has_calls(
+            remote_calls,
+            any_order=True)
+        add_location_rules_for_local_nodes.assert_has_calls(
+            add_loc_calls,
+            any_order=True)
+        configure_pacemaker_remote_stonith.assert_has_calls(
+            stonith_calls,
+            any_order=True)
+        cleanup_remote_nodes.assert_called_once_with(
+            ['res-node2', 'res-node1'])
+
+    @mock.patch.object(utils, 'config')
+    @mock.patch('pcmk.commit')
+    @mock.patch('pcmk.is_resource_present')
+    def test_configure_pacemaker_remote_stonith(self, is_resource_present,
+                                                commit, config):
+        cfg = {
+            'maas_url': 'http://maas/2.0',
+            'maas_credentials': 'apikey'}
+        is_resource_present.return_value = False
+        config.side_effect = lambda x: cfg.get(x)
+        utils.configure_pacemaker_remote_stonith('node1')
+        cmd = (
+            "crm configure primitive st-node1 "
+            "stonith:external/maas "
+            "params url='http://maas/2.0' apikey='apikey' "
+            "hostnames=node1 "
+            "op monitor interval=25 start-delay=25 "
+            "timeout=25")
+        commit_calls = [
+            mock.call(cmd),
+            mock.call('crm configure property stonith-enabled=true'),
+        ]
+        commit.assert_has_calls(commit_calls)
+
+    @mock.patch.object(utils, 'config')
+    @mock.patch('pcmk.commit')
+    @mock.patch('pcmk.is_resource_present')
+    def test_configure_pacemaker_remote_stonith_duplicate(self,
+                                                          is_resource_present,
+                                                          commit, config):
+        cfg = {
+            'maas_url': 'http://maas/2.0',
+            'maas_credentials': 'apikey'}
+        is_resource_present.return_value = True
+        config.side_effect = lambda x: cfg.get(x)
+        utils.configure_pacemaker_remote_stonith('node1')
+        self.assertFalse(commit.called)
+
+    @mock.patch.object(utils, 'config')
+    @mock.patch('pcmk.commit')
+    @mock.patch('pcmk.is_resource_present')
+    def test_configure_pacemaker_remote_stonith_no_url(self,
+                                                       is_resource_present,
+                                                       commit, config):
+        cfg = {
+            'maas_credentials': 'apikey'}
+        is_resource_present.return_value = False
+        config.side_effect = lambda x: cfg.get(x)
+        with self.assertRaises(Exception):
+            utils.configure_pacemaker_remote_stonith('node1')
+
+    @mock.patch('pcmk.commit')
+    @mock.patch('pcmk.list_nodes')
+    @mock.patch.object(utils, 'add_location_rules_for_local_nodes')
+    @mock.patch.object(utils, 'get_resources_on_remotes')
+    def test_configure_resources_on_remotes(self, get_resources_on_remotes,
+                                            add_location_rules_for_local_nodes,
+                                            list_nodes, commit):
+        list_nodes.return_value = ['node1', 'node2', 'node3']
+        get_resources_on_remotes.return_value = False
+        clones = {
+            'cl_res_masakari_haproxy': u'res_masakari_haproxy'}
+        resources = {
+            'res_masakari_1e39e82_vip': u'ocf:heartbeat:IPaddr2',
+            'res_masakari_flump': u'ocf:heartbeat:IPaddr2',
+            'res_masakari_haproxy': u'lsb:haproxy'}
+        groups = {
+            'grp_masakari_vips': 'res_masakari_1e39e82_vip'}
+        utils.configure_resources_on_remotes(
+            resources=resources,
+            clones=clones,
+            groups=groups)
+        add_loc_calls = [
+            mock.call('cl_res_masakari_haproxy'),
+            mock.call('res_masakari_flump'),
+            mock.call('grp_masakari_vips')]
+        add_location_rules_for_local_nodes.assert_has_calls(
+            add_loc_calls,
+            any_order=True)
+        commit.assert_called_once_with(
+            'crm_resource --resource cl_res_masakari_haproxy '
+            '--set-parameter clone-max '
+            '--meta --parameter-value 3')
+
+    @mock.patch('pcmk.commit')
+    @mock.patch('pcmk.list_nodes')
+    @mock.patch.object(utils, 'add_location_rules_for_local_nodes')
+    @mock.patch.object(utils, 'get_resources_on_remotes')
+    def test_configure_resources_on_remotes_true(
+            self,
+            get_resources_on_remotes,
+            add_location_rules_for_local_nodes,
+            list_nodes,
+            commit):
+        list_nodes.return_value = ['node1', 'node2', 'node3']
+        get_resources_on_remotes.return_value = True
+        clones = {
+            'cl_res_masakari_haproxy': u'res_masakari_haproxy'}
+        resources = {
+            'res_masakari_1e39e82_vip': u'ocf:heartbeat:IPaddr2',
+            'res_masakari_flump': u'ocf:heartbeat:IPaddr2',
+            'res_masakari_haproxy': u'lsb:haproxy'}
+        groups = {
+            'grp_masakari_vips': 'res_masakari_1e39e82_vip'}
+        utils.configure_resources_on_remotes(
+            resources=resources,
+            clones=clones,
+            groups=groups)
+        self.assertFalse(commit.called)
+
+    @mock.patch('pcmk.commit')
+    @mock.patch('pcmk.list_nodes')
+    @mock.patch.object(utils, 'add_location_rules_for_local_nodes')
+    @mock.patch.object(utils, 'get_resources_on_remotes')
+    def test_configure_resources_on_remotes_unknown(
+            self,
+            get_resources_on_remotes,
+            add_location_rules_for_local_nodes,
+            list_nodes,
+            commit):
+        list_nodes.return_value = ['node1', 'node2', 'node3']
+        get_resources_on_remotes.side_effect = ValueError
+        clones = {
+            'cl_res_masakari_haproxy': u'res_masakari_haproxy'}
+        resources = {
+            'res_masakari_1e39e82_vip': u'ocf:heartbeat:IPaddr2',
+            'res_masakari_flump': u'ocf:heartbeat:IPaddr2',
+            'res_masakari_haproxy': u'lsb:haproxy'}
+        groups = {
+            'grp_masakari_vips': 'res_masakari_1e39e82_vip'}
+        utils.configure_resources_on_remotes(
+            resources=resources,
+            clones=clones,
+            groups=groups)
+        self.assertFalse(commit.called)

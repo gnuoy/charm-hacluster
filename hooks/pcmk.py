@@ -103,12 +103,12 @@ def crm_res_running(opt_name):
 
 
 def list_nodes():
-    cmd = ['crm', 'node', 'list']
+    cmd = ['crm_node', '-l']
     out = subprocess.check_output(cmd)
     nodes = []
     for line in str(out).split('\n'):
         if line != '':
-            nodes.append(line.split(':')[0])
+            nodes.append(line.split()[1])
 
     return nodes
 
