@@ -39,6 +39,7 @@ class TestCorosyncConf(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
         os.remove(self.tmpfile.name)
 
+    @mock.patch.object(hooks, 'get_member_ready_nodes')
     @mock.patch.object(hooks, 'configure_resources_on_remotes')
     @mock.patch.object(hooks, 'configure_pacemaker_remotes')
     @mock.patch.object(hooks, 'set_cluster_symmetry')
@@ -67,7 +68,8 @@ class TestCorosyncConf(unittest.TestCase):
                                  wait_for_pcmk, write_maas_dns_address,
                                  set_cluster_symmetry,
                                  configure_pacemaker_remotes,
-                                 configure_resources_on_remotes):
+                                 configure_resources_on_remotes,
+                                 get_member_ready_nodes):
 
         def fake_crm_opt_exists(res_name):
             # res_ubuntu will take the "update resource" route
@@ -78,6 +80,8 @@ class TestCorosyncConf(unittest.TestCase):
         is_leader.return_value = True
         related_units.return_value = ['ha/0', 'ha/1', 'ha/2']
         get_cluster_nodes.return_value = ['10.0.3.2', '10.0.3.3', '10.0.3.4']
+        get_member_ready_nodes.return_value = ['10.0.3.2', '10.0.3.3',
+                                               '10.0.3.4']
         relation_ids.return_value = ['hanode:1']
         get_corosync_conf.return_value = True
         cfg = {'debug': False,
@@ -139,6 +143,7 @@ class TestCorosyncConf(unittest.TestCase):
                     commit.assert_any_call(
                         'crm -w -F configure %s %s %s' % (kw, name, params))
 
+    @mock.patch.object(hooks, 'get_member_ready_nodes')
     @mock.patch.object(hooks, 'configure_resources_on_remotes')
     @mock.patch.object(hooks, 'configure_pacemaker_remotes')
     @mock.patch.object(hooks, 'set_cluster_symmetry')
@@ -172,12 +177,15 @@ class TestCorosyncConf(unittest.TestCase):
                                         setup_maas_api, write_maas_dns_addr,
                                         set_cluster_symmetry,
                                         configure_pacemaker_remotes,
-                                        configure_resources_on_remotes):
+                                        configure_resources_on_remotes,
+                                        get_member_ready_nodes):
         validate_dns_ha.return_value = True
         crm_opt_exists.return_value = False
         is_leader.return_value = True
         related_units.return_value = ['ha/0', 'ha/1', 'ha/2']
         get_cluster_nodes.return_value = ['10.0.3.2', '10.0.3.3', '10.0.3.4']
+        get_member_ready_nodes.return_value = ['10.0.3.2', '10.0.3.3',
+                                               '10.0.3.4']
         relation_ids.return_value = ['ha:1']
         get_corosync_conf.return_value = True
         cfg = {'debug': False,

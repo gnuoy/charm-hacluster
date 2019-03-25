@@ -65,6 +65,7 @@ from utils import (
     get_corosync_conf,
     assert_charm_supports_ipv6,
     get_cluster_nodes,
+    get_member_ready_nodes,
     parse_data,
     configure_corosync,
     configure_stonith,
@@ -427,12 +428,6 @@ def ha_relation_changed():
                 pcmk.commit(cmd)
                 log('%s' % cmd, level=DEBUG)
 
-        configure_pacemaker_remotes()
-        configure_resources_on_remotes(
-            resources=resources,
-            clones=clones,
-            groups=groups)
-
         for res_name, res_type in resources.iteritems():
             if len(init_services) != 0 and res_name in init_services:
                 # Checks that the resources are running and started.
@@ -458,8 +453,23 @@ def ha_relation_changed():
             cmd = 'crm resource cleanup %s' % grp_name
             pcmk.commit(cmd)
 
+        # All members of the cluster need to be registered before resources
+        # that reference them can be created.
+        if len(get_member_ready_nodes()) >= int(config('cluster_count')):
+            log('Configuring any remote nodes', level=INFO)
+            configure_pacemaker_remotes()
+            configure_resources_on_remotes(
+                resources=resources,
+                clones=clones,
+                groups=groups)
+        else:
+            log('Deferring configuration of any remote nodes', level=INFO)
+
     for rel_id in relation_ids('ha'):
         relation_set(relation_id=rel_id, clustered="yes")
+
+    for rel_id in relation_ids('hanode'):
+        relation_set(relation_id=rel_id, member_ready=True)
 
 
 @hooks.hook()
